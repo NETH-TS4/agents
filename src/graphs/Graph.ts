@@ -11,6 +11,7 @@ import {
   AIMessageChunk,
   ToolMessage,
   SystemMessage,
+  HumanMessage, //palm
 } from '@langchain/core/messages';
 import type {
   BaseMessage,
@@ -46,6 +47,9 @@ import {
 import { ChatOpenAI, AzureChatOpenAI } from '@/llm/openai';
 import { createFakeStreamingLLM } from '@/llm/fake';
 import { HandlerRegistry } from '@/events';
+
+// import { callN8nAgent } from './callN8nAgent'; //palm
+import { getAgentState , callN8nAgent} from './callN8nAgent'; //palm
 
 const { AGENT, TOOLS } = GraphNodeKeys;
 export type GraphNode = GraphNodeKeys | typeof START;
@@ -480,7 +484,7 @@ export class StandardGraph extends Graph<t.BaseGraphState, GraphNode> {
     ): Promise<Partial<t.BaseGraphState>> => {
       const { provider = '' } =
         (config?.configurable as t.GraphConfig | undefined) ?? {};
-      if (this.boundModel == null) {
+      if (this.boundModel == null) {  
         throw new Error('No Graph model found');
       }
       if (!config || !provider) {
@@ -568,11 +572,22 @@ export class StandardGraph extends Graph<t.BaseGraphState, GraphNode> {
       this.lastStreamCall = Date.now();
 
       let result: Partial<t.BaseGraphState>;
+
+      // console.log('--- Final Messages to LLM ---');
+      // console.log(finalMessages);
+
+      // console.log('--- LLM Config ---');
+      // console.log(config);
+
       if (
         (this.tools?.length ?? 0) > 0 &&
         manualToolStreamProviders.has(provider)
       ) {
         const stream = await this.boundModel.stream(finalMessages, config);
+
+        // console.log('--- LLM Stream Output ---');
+        // console.log(stream);
+
         let finalChunk: AIMessageChunk | undefined;
         for await (const chunk of stream) {
           dispatchCustomEvent(GraphEvents.CHAT_MODEL_STREAM, { chunk }, config);
@@ -584,12 +599,65 @@ export class StandardGraph extends Graph<t.BaseGraphState, GraphNode> {
         }
 
         finalChunk = modifyDeltaProperties(this.provider, finalChunk);
+
+        // console.log('--- Final LLM Stream Output ---');
+        // console.log(finalChunk);
+
         result = { messages: [finalChunk as AIMessageChunk] };
       } else {
-        const finalMessage = (await this.boundModel.invoke(
-          finalMessages,
-          config
-        )) as AIMessageChunk;
+
+        // console.log('--- LLM Invoke Input ---');
+        // console.log(finalMessages);
+        console.log('--- LLM Invoke Config ---');
+        console.log(config?.configurable?.agent_id);
+
+        let finalMessage: AIMessageChunk;
+
+        const state = getAgentState();
+
+        if (config?.configurable?.agent_id === state.agentId) {  // case check condition for use n8n endpoint
+
+          console.log("======= case use n8n =======");
+          //call n8n agent
+          const n8nTextResponse = await callN8nAgent(finalMessages, config);
+
+          const modifiedMessages = finalMessages.map((msg) => {
+            if (msg._getType && msg._getType() === "human") {
+              return new HumanMessage({
+                content: [
+                  {
+                    type: "text",
+                    text: `Please display the following message exactly as it is, without analyzing or doing anything else\n\n${n8nTextResponse}`,
+                  },
+                ],
+                additional_kwargs: msg.additional_kwargs ?? {},
+                response_metadata: msg.response_metadata ?? {},
+              });
+            }
+            return msg;
+          });
+
+          // console.log('--- Modified Messages with n8n Response ---');
+          // console.log(modifiedMessages);
+          // //call llm make final answer
+          finalMessage = await this.boundModel.invoke(modifiedMessages, config) as AIMessageChunk;
+
+          console.log('raw content:', finalMessage.content);
+
+        } else {
+          // old system
+          finalMessage = await this.boundModel.invoke(finalMessages, config) as AIMessageChunk;
+        }
+
+        //palm
+        // const finalMessage = (await this.boundModel.invoke(
+        //   finalMessages,
+        //   config
+        // )) as AIMessageChunk;
+
+        // console.log('--- LLM Invoke Output ---');
+        // console.log(finalMessage);
+
         if ((finalMessage.tool_calls?.length ?? 0) > 0) {
           finalMessage.tool_calls = finalMessage.tool_calls?.filter(
             (tool_call) => {
@@ -600,14 +668,22 @@ export class StandardGraph extends Graph<t.BaseGraphState, GraphNode> {
             }
           );
         }
+        // console.log('--- Final LLM Invoke Output ---');
+        // console.log(finalMessage);
+
         result = { messages: [finalMessage] };
       }
+
+      // console.log('--- result Output ---');
+      // console.log(result);
 
       this.storeUsageMetadata(result.messages?.[0]);
       this.cleanupSignalListener();
       return result;
     };
   }
+
+
 
   createWorkflow(): t.CompiledWorkflow<t.BaseGraphState> {
     const routeMessage = (

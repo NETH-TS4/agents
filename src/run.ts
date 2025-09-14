@@ -194,12 +194,26 @@ export class Run<T extends t.BaseGraphState> {
       provider: this.provider,
     });
 
+    console.log('[run.ts in lib]=== inputs ===');
+    // console.log(inputs);
+
+    // console.log('=== config ===');
+    // console.log(config);
+
     const stream = this.graphRunnable.streamEvents(inputs, config, {
       raiseError: true,
     });
 
+    console.log('[run.ts in lib] === stream ===');
+    // console.log(stream);
+
+    // let i = 0; //palm
+
     for await (const event of stream) {
       const { data, name, metadata, ...info } = event;
+       //palm
+      // console.log('=== event data ===');
+      // console.log(i,"data event",event);
 
       let eventName: t.EventName = info.event;
       if (
@@ -219,6 +233,8 @@ export class Run<T extends t.BaseGraphState> {
       if (handler) {
         handler.handle(eventName, data, metadata, this.Graph);
       }
+
+      // i++; //palm
     }
 
     if (this.returnContent) {

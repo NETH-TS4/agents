@@ -9,6 +9,7 @@ routes/
 # Ignore specific directories
 src/proto/
 src/scripts/
+src/graphs
 
 # Ignore specific files
 *.js
